@@ -60,6 +60,16 @@ TAG_COLOR = {
 # --------------------------------------------------------------------------
 POSTS = [
     dict(
+        slug='dualmind-ai-workflow',
+        title='我用 AI 写 DualMind 的一天：把约束外置，以及「假成功」为什么最可怕',
+        path='2026/10/06/dualmind-ai-workflow/',
+        iso='2026-10-06T07:10:00.000Z',
+        ymd='2026-10-06',
+        tags=['js'],
+        new=True,
+        body_file='tools/content/dualmind-ai-workflow.body.html',
+    ),
+    dict(
         slug='dualmind-architecture',
         title='DualMind 架构设计与技术选型：给 MV3 浏览器扩展划清边界',
         path='2026/10/06/dualmind-architecture/',

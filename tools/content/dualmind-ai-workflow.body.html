@@ -1,0 +1,129 @@
+<h3>写在前面</h3>
+<p>DualMind 从 0 到 V1 冻结、再做完 V1.5 的沉浸式翻译，一共 <b>26 个提交，全部发生在同一天</b>。这个速度得益于全程用 AI 结对：写代码、重构、补测试、写文档、做排查，几乎都在对话里完成。</p>
+<p>但这一篇不打算写「AI 有多快」。真正值得记下来的是另一件事——<b>AI 让「写代码」变快了，却没有让「确认代码是对的」变快</b>。产出速度提升了，验证成本反而显得更重：代码一天写完了，可确认它真的能跑、真的没跑偏，才是最花时间的那部分。</p>
+<p>所以下面这些心得，本质上都是围绕「怎么让它不跑偏」和「怎么知道它什么时候在糊弄你」展开的。</p>
+<a id="more"></a>
+
+<h3>一、把项目约束「外置」成文件，而不是每次对话重复</h3>
+<p>最开始我也是一遍遍在对话里提醒「别在 content script 里放 API Key」。很快发现这不现实：新会话不记得，长会话会遗忘，而且每次重复都要烧上下文。</p>
+<p>最后的做法是把约束分层写进仓库，并且<b>显式写死优先级</b>（<code>AGENTS.md</code>）：</p>
+<figure class="highlight plain"><pre><span class="line">1. 用户明确指令</span><br><span class="line">2. 本文件（AGENTS.md）与 .cursor/rules/</span><br><span class="line">3. docs/decisions.md、docs/architecture-v1.md</span><br><span class="line">4. 训练数据（可能过期，不得覆盖上述任意一层）</span><br></pre></figure>
+<p>第 4 条是我特别加进去的。模型的训练数据里塞满了过期的 API 写法（比如各种老的 MV3 权限用法），如果不明确「你的记忆排在最后」，它会自信地覆盖掉项目里的新约定。</p>
+<p>规则拆成三份，因为它们的<b>生效方式本来就不同</b>：</p>
+<table>
+<thead><tr><th>规则文件</th><th>生效方式</th><th>写什么</th></tr></thead>
+<tbody>
+<tr><td><code>dualmind-core.mdc</code></td><td><code>alwaysApply: true</code>（始终注入）</td><td>产品边界、架构铁律、技术栈</td></tr>
+<tr><td><code>dualmind-extension.mdc</code></td><td>按 glob 命中才注入</td><td>Provider / 翻译 / Content / 权限的代码约定</td></tr>
+<tr><td><code>dualmind-investigation.mdc</code></td><td><code>alwaysApply: true</code></td><td>排查类任务的节奏与预算护栏</td></tr>
+</tbody>
+</table>
+<p>按 glob 注入那份是关键，它只在真正改代码时才出现：</p>
+<figure class="highlight yaml"><pre><span class="line"><span class="comment">---</span></span><br><span class="line"><span class="key">description</span>: <span class="string">DualMind</span> <span class="string">扩展代码约定（providers</span> <span class="comment">/ features / entrypoints）</span></span><br><span class="line"><span class="key">globs</span>: <span class="string">"{entrypoints,features,providers,shared}//*.{ts,tsx}"</span></span><br><span class="line"><span class="key">alwaysApply</span>: <span class="string">false</span></span><br><span class="line"><span class="comment">---</span></span><br></pre></figure>
+<p>核心规则文件里，最有用的不是「做什么」，而是铁律和禁令：</p>
+<figure class="highlight plain"><pre><span class="line">## 架构铁律</span><br><span class="line">- 仅 Background 可调用 LLM / Ollama；禁止 Content Script 持有 API Key 或直连模型</span><br><span class="line">- Provider 适配层（providers/）永不碰 DOM</span><br><span class="line">- 新能力放 features/&lt;name&gt;/，勿把逻辑塞进 TranslateService</span><br></pre></figure>
+<p>把「铁律」和「建议」分开写，效果比写一大段「请遵循最佳实践」好得多。</p>
+
+<h3>二、把铁律变成可执行的 checklist</h3>
+<p>规则写在文档里，AI 仍然可能「知道但没照做」。我的做法是把铁律再翻译成一个斜杠命令 <code>/arch-check</code>，让它可以被逐条执行：</p>
+<figure class="highlight markdown"><pre><span class="line">- [ ] AI 请求是否只在 Background</span><br><span class="line">- [ ] Feature 是否经 shared/llm（而非各自拼 Provider）</span><br><span class="line">- [ ] API Key 是否只存 chrome.storage，且不进 Content Script</span><br><span class="line">- [ ] Provider 是否与 DOM 解耦</span><br><span class="line">- [ ] 是否无意扩大 host_permissions / 自动化权限</span><br><span class="line">- [ ] 是否把 Chat/Agent 逻辑塞进翻译链路</span><br></pre></figure>
+<p>命令末尾我加了一句要求，实测很有效：</p>
+<figure class="highlight plain"><pre><span class="line">列出违规项（含文件）与建议改法；全部通过则明确写「架构检查通过」。</span><br></pre></figure>
+<p>为什么要专门要求「明确写通过」？因为模型有报忧不报喜以外的另一种倾向——<b>含糊其辞</b>。只要求「列出违规项」时，它可能写一段「整体符合架构，但建议注意…」的模糊结论。强制它给出「通过 / 需修改」二选一的明确判定，才能真的当闸门用。</p>
+
+<h3>三、把高频动作命令化</h3>
+<p>项目里固化了 8 个自定义斜杠命令，覆盖日常最高频的动作：</p>
+<table>
+<thead><tr><th>命令</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>/plan-feature</code></td><td>先出方案再动手（默认不改代码）</td></tr>
+<tr><td><code>/arch-check</code></td><td>架构合规检查</td></tr>
+<tr><td><code>/review</code></td><td>聚焦代码审查</td></tr>
+<tr><td><code>/fix</code></td><td>排查并最小修复</td></tr>
+<tr><td><code>/add-provider</code></td><td>按 Provider 约定新增供应商</td></tr>
+<tr><td><code>/test-plan</code></td><td>生成可勾选的手工测试清单</td></tr>
+<tr><td><code>/commit-msg</code></td><td>起草 commit message（不直接提交）</td></tr>
+<tr><td><code>/explain</code></td><td>解释代码与调用链</td></tr>
+</tbody>
+</table>
+<p>命令文件本身就是提示词。真正起作用的是里面那些<b>明确写出的禁止项</b>——它们都是针对 AI 的坏习惯加的：</p>
+<figure class="highlight markdown"><pre><span class="line"><span class="comment"># /fix 的禁止清单</span></span><br><span class="line">- 借修 bug 大范围重构</span><br><span class="line">- 在 Content Script 中新增直连模型的逻辑</span><br><span class="line">- 修改 docs/ 决策除非用户要求</span><br></pre></figure>
+<figure class="highlight markdown"><pre><span class="line"><span class="comment"># /review 的输出要求</span></span><br><span class="line">- <b>不必改</b>：明确写出可忽略项，避免过度工程</span><br></pre></figure>
+<figure class="highlight markdown"><pre><span class="line"><span class="comment"># /commit-msg 的约束</span></span><br><span class="line">- <b>不要</b>擅自执行 commit，除非用户明确要求提交</span><br><span class="line">- 发现疑似密钥 / <span class="code">.env</span> 时立刻警告并排除</span><br></pre></figure>
+<p>「/review 必须写出不必改的项」这条看起来奇怪，但它治的是过度工程：如果不要求，审查结果往往是「12 条改进建议」，其中一半是它自己脑补出来的重构。强制它划出「不用改」的边界，改动面才可控。</p>
+
+<h3>四、先规划，再动手</h3>
+<p>大需求一律先走 <code>/plan-feature</code> 或 Plan 模式，产出落到 <code>.cursor/plans/</code> 里，带 todo 状态跟踪。命令里第一步就是拿需求去对照 <code>docs/decisions.md</code>：</p>
+<figure class="highlight plain"><pre><span class="line">1. 对照 docs/decisions.md：是否落在 V1 范围？若越界，先提示并给出分期建议</span><br><span class="line">2. 指出会动到的目录：entrypoints/ / features/ / providers/ / shared/</span><br><span class="line">3. 给出 3～6 步实现计划与风险点</span><br><span class="line">4. 列出需要用户确认的 1～2 个关键决策</span><br></pre></figure>
+<p>第一步价值最大。V1 明确写了「不做沉浸式全文翻译」，但当我说「我想做整页对照」时，流程会先把这件事标为越界、要求先更新决策文档再动手——而不是直接闷头写代码。后来沉浸译作为 V1.5 正式立项，也是走这个流程。</p>
+
+<h3>五、让文档成为唯一事实来源</h3>
+<p><code>docs/decisions.md</code> 是我投入产出比最高的一份文件。每拍板一个决策就记一条，而且必须写清<b>理由</b>和<b>不做什么</b>：</p>
+<figure class="highlight markdown"><pre><span class="line"><span class="section">## 明确不做的事（避免范围膨胀）</span></span><br><span class="line"></span><br><span class="line">- 不要在 V1 把翻译服务改成万能 God Object</span><br><span class="line">- 不要在 Content Script 里存/读 API Key 或直连 LLM</span><br><span class="line">- 不要默认开启强打扰悬浮球；站点可禁用</span><br><span class="line">- Agent 级浏览器操作必须后置，且需强确认与独立权限说明</span><br></pre></figure>
+<p>「明确不做的事」这一节比「要做的事」更值钱。因为 AI 天然倾向于「多做一点」：你说「加个翻译浮层」，它可能顺手加上悬浮球、加上历史记录、加上快捷设置面板。有一份书面清单当挡箭牌，范围才守得住。</p>
+<p>决策条目里还会写清取舍，而不只是结论。比如 <code>&lt;all_urls&gt;</code> 权限那条，记了保留的两处理由、代价（安装警告）、以及为什么<b>不</b>用 <code>optional_host_permissions</code>：</p>
+<figure class="highlight markdown"><pre><span class="line">- <b>不采用的替代</b>：仅把 host <span class="code">&lt;all_urls&gt;</span> 改为 optional_host_permissions 运行时申请</span><br><span class="line">  —— 因 content_scripts.matches 仍是 <span class="code">&lt;all_urls&gt;</span>，<b>安装警告不变</b>，只多一处运行时失败点，收益极低。</span><br></pre></figure>
+<p>顺带一个教训：<b>文档会漂移</b>。AI 改了目录结构，文档里的目录树却还是旧的。后来在收官清单里专门列了一项「文档漂移已修」，否则下一轮 AI 会照着过时的文档干活。</p>
+
+<h3>六、跨会话交接文档</h3>
+<p>AI 对话最实际的限制是上下文：一轮长任务可能产生数千行 E2E 日志，开新会话后这些全丢了，只能重新读一遍。</p>
+<p>解法是让 AI 在阶段收尾时产出一份交接文档，开新会话只带这一个文件：</p>
+<figure class="highlight markdown"><pre><span class="line"><span class="section"># 交接：V1.5 沉浸式全文双语翻译（测试阶段）</span></span><br><span class="line"></span><br><span class="line"><span class="section">## 1. 当前状态</span></span><br><span class="line"><span class="section">## 2. 关键决策与约束</span></span><br><span class="line"><span class="section">## 3. 未决 P0：译文回显（模型抄写）</span></span><br><span class="line"><span class="section">## 4. 可复制命令</span></span><br><span class="line"><span class="section">## 5. 文件地图</span></span><br></pre></figure>
+<p>最有用的两节是「未决问题」和「可复制命令」。前者把「这一轮刻意只记录不修」的缺陷明确交接下去，避免下个会话以为已经修好了；后者是可直接粘贴的命令，<b>并且带着踩坑注释</b>：</p>
+<figure class="highlight bash"><pre><span class="line"><span class="comment"># E2E：必须先重新构建，否则跑的是旧产物（这是踩过的坑）</span></span><br><span class="line">./node_modules/.bin/wxt build</span><br><span class="line"><span class="comment"># 仅沙箱 shell 需要：沙箱把 os.arch() 报成 x64，且 Chromium 因 xattr 受限会 SIGABRT</span></span><br><span class="line"><span class="keyword">export</span> PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=mac-arm64</span><br></pre></figure>
+<p>交接文档本质上就是「上下文压缩」——把上一个会话里最有价值的部分留下，把过程日志丢掉。</p>
+
+<h3>七、问题：AI 的几个稳定坏习惯</h3>
+<p>用久了会发现，有些毛病不是偶发，而是稳定复现的。针对性的做法是「把禁令写进规则」。</p>
+<h4>坏习惯一：猜测 + 反复试错</h4>
+<p>需求有歧义时，AI 默认的选择不是提问，而是猜一个方向然后开始改，改错了再试下一个。这在 <code>AGENTS.md</code> 里被明确列为「Ask first」类别：</p>
+<figure class="highlight markdown"><pre><span class="line"><span class="section">### Ask first</span></span><br><span class="line">- 需求不明确时直接问，不要靠猜测 + 反复试错</span><br></pre></figure>
+<h4>坏习惯二：过度工程</h4>
+<p>前面提过，治法是要求它划出「不必改」的清单。另外「引进新依赖」也被归入 Ask first——实际用下来，它确实很喜欢为了一个小问题引入一个库。</p>
+<h4>坏习惯三：烧上下文</h4>
+<p>排查问题时，AI 很容易一路深挖：读十个文件、跑五次命令，最后给出一个从第三行日志就能看出的结论。所以我写了 <code>dualmind-investigation.mdc</code>，用硬性预算约束它（下一节详说）。</p>
+
+<h3>八、问题：「假成功」是最危险的失败形态</h3>
+<p>这是我踩得最疼的一类问题。<b>AI 说「做完了」、测试显示「通过」、但实际结果是错的</b>——而且看起来完全正常。</p>
+<p>最典型的一次：沉浸式整页翻译，UI 显示「翻译完成」，但部分段落的「译文」与原文一模一样。根因是模型在多语混排批量输入下会「抄写」输入内容，而 AI 写的代码<b>没有做任何回显校验</b>，直接把原文当译文渲染了。技术上每个环节都「成功」了，用户看到的却是一个「成功的失败」。</p>
+<p>更值得警惕的是第二层：<b>测试也可能是假绿的</b>。有一次 9 条划词浮层的 E2E 用例集体挂掉，看着像产品回归，实际是 AI 写的测试种子有缺陷——种子里写了 <code>toolbarTrigger: 'auto'</code>，但没写迁移标记，于是产品里的一个迁移把种子改写了。测试「正确地」测了一个不存在的前提。</p>
+<p>所以我现在的做法是两条：</p>
+<p>1. <b>把「未验证」写进汇报格式</b>。<code>AGENTS.md</code> 要求每轮任务结束按固定结构汇报，其中第二条专门是这一项：</p>
+<figure class="highlight markdown"><pre><span class="line">1. <b>改动</b>：改了哪些文件（路径即可；新建说明主要结构）</span><br><span class="line">2. <b>未验证</b>：未跑哪些命令、为什么</span><br><span class="line">3. <b>请用户验证</b>：Chrome 中划词浮层 / Side Panel / Options 的哪些路径</span><br><span class="line">4. <b>假设与风险</b>：未决问题、权限或兼容性风险</span><br></pre></figure>
+<p>「未跑哪些命令、为什么」这一条看起来啰嗦，但它把「我其实没验证」从隐含变成显式。没有这一条，AI 的汇报会自然地滑向「已完成，测试通过」，而实际上它可能只跑了一个单测。</p>
+<p>2. <b>对「成功」保持独立验证</b>。E2E 绿了，就去看它到底断言了什么；AI 说「已修复」，就去读 diff 而不是读结论。产出越快，这一步越不能省。</p>
+
+<h3>九、问题：AI 对「环境」几乎一无所知</h3>
+<p>AI 能看到代码，但看不到你的机器。这类问题在规则里被单独收进「环境纪律」：</p>
+<figure class="highlight markdown"><pre><span class="line">- 不擅自杀用户正在运行的进程（如 pnpm dev）；需要时<b>给命令让用户执行</b>。</span><br><span class="line">- 验证优先用 prod 产物（.output/chrome-mv3），避免污染用户 dev 环境。</span><br><span class="line">- 临时脚本命名 _tmp-*，用完即删；收尾时确认 git status 无残留。</span><br></pre></figure>
+<p>这些都是踩出来的。举两个具体的：</p>
+<p>1. <b>改了 content script，后台标签页不会更新</b>。代码是对的，但页面还在跑旧脚本，表现成「新功能不生效」「浮层关不掉」——非常像代码 bug。这条最终写进了代码规则文件，并且特意标注<b>「曾发生过」</b>，提醒排查前先确认环境：</p>
+<figure class="highlight markdown"><pre><span class="line"><b>改了 Content Script 后，Chrome 不会自动注入已打开的标签页</b>：验证前必须</span><br><span class="line">「Reload 扩展 + 刷新页面」，否则页面在跑旧脚本，会把「新功能不生效 / 浮层关不掉」</span><br><span class="line">误判成代码 bug（曾发生过）。排查此类问题先确认已刷新，再看代码。</span><br></pre></figure>
+<p>2. <b>E2E 跑的是旧产物</b>。E2E 依赖 <code>wxt build</code> 的输出，忘了重新构建就会拿旧产物跑一遍「全绿」——又是一次假成功。这条也写进了规则和交接文档。</p>
+<p>结论：环境类问题一旦踩到，就要立刻写进规则。不然每个新会话都会重踩一遍。</p>
+
+<h3>十、问题：AI 的报告「看起来很有道理」</h3>
+<p>AI 很擅长产出结构清晰、证据齐全的报告——带文件路径、带行号、带表格，读起来非常有说服力。这既是优点也是风险，因为它会让「看起来对」和「确实对」更难分辨。</p>
+<p>有一次我让它做上架审核风险分析，结果相当扎实：它去找了<b>构建产物</b>里的 manifest（而不是只看源码），发现 3 条 P0 全都在「提审材料」而非代码——比如没有隐私政策、审核员默认拿不到可用端点。这是真发现。</p>
+<p>但同一件事也有隐患：如果不在提示里明确边界，它很可能顺手去改 manifest「把问题修掉」。所以我在那次任务里写死了：</p>
+<figure class="highlight markdown"><pre><span class="line">状态：<b>仅诊断，未改动任何代码或 manifest</b></span><br></pre></figure>
+<p>对报告类任务，明确「只分析不改动」和「结论要区分代码问题与材料问题」，比让它「顺手修复」有价值得多——修错地方的代价比不修更高。</p>
+
+<h3>十一、成本控制：给排查加上预算护栏</h3>
+<p>这是我觉得最值得单独拿出来讲的一条经验。排查类任务最容易失控——既烧 token，也容易在错误方向上越走越远。于是我为它单独写了一份规则：</p>
+<figure class="highlight markdown"><pre><span class="line"><span class="section">## 先判断，后深入</span></span><br><span class="line">- 先用最少证据（≤2 次工具调用）形成<b>初步判断</b>，随即<b>停下汇报</b>：</span><br><span class="line">  结论 + 关键证据 + 不确定处 + 建议的下一步，等用户确认再继续。</span><br><span class="line">- 禁止在没有初步结论的情况下连续单向深挖。</span><br><span class="line"></span><br><span class="line"><span class="section">## 预算护栏</span></span><br><span class="line">- 同一排查方向连续 <b>3 次</b>工具调用仍无新证据 → 停止。</span><br><span class="line">- 单个问题累计 <b>8 次</b>工具调用仍无定论 → 必须停下汇报，不得继续加码。</span><br></pre></figure>
+<p>配套的还有「证据优先级」，从便宜到贵排序，要求它先用便宜的：</p>
+<figure class="highlight plain"><pre><span class="line">1. 终端日志、构建产物（从 manifest / bundle 里检索关键字符串）、已有测试结果</span><br><span class="line">2. 静态代码路径（grep + 局部精读）</span><br><span class="line">3. 起服务 / 开浏览器做实机验证 —— 先说明预期收益，再动手</span><br></pre></figure>
+<p>这条规则的实际收益超出预期。它把「AI 埋头挖半天」变成了「先给我一个初步判断」。上面那个「译文回显」的 P0，最终就是靠<b>直接 curl 本地 Ollama</b> 做探针快速定位的——比开浏览器点一遍快得多：</p>
+<figure class="highlight markdown"><pre><span class="line">| 场景 | 结果 |</span><br><span class="line">|------|------|</span><br><span class="line">| 纯英文 6 段批量 | 6/6 正确出中文 |</span><br><span class="line">| EN+ZH+FR+ES+EN <b>混排</b>批量 | <b>仅第 1 段被翻译，其余原样回显</b> |</span><br></pre></figure>
+<p>如果一开始就按「去浏览器里复现一遍」的思路走，光环境准备就要花掉大量上下文，而且未必能得到这么干净的边界。</p>
+
+<h3>十二、小结</h3>
+<p>回头看，26 个提交里真正花时间的不是「让 AI 写出代码」，而是这几件事：</p>
+<p>1. <b>写约束</b>：把铁律和禁令外置成规则文件，并写死优先级（训练数据排最后）。<br>
+2. <b>把约束变成可执行动作</b>：<code>/arch-check</code> 这样的 checklist 命令，强制给出「通过 / 需修改」的明确判定。<br>
+3. <b>留下文档</b>：决策记理由、记「不做什么」；阶段收尾产出交接文档，把上下文压缩下来。<br>
+4. <b>给排查加预算</b>：先判断后深入、几次调用无新证据就停、先查便宜的证据。<br>
+5. <b>承认「未验证」</b>：汇报里显式写出没跑哪些命令，别让「已完成」掩盖「未验证」。<br>
+6. <b>独立验证「成功」</b>：无论是 AI 的结论、还是测试的绿色，都要多问一句它到底证明了什么。</p>
+<p>最后一句感受：<b>AI 把写代码的边际成本压得很低，于是「判断力」就成了真正的瓶颈</b>。哪些约束是铁的、哪些改动是没必要的、哪个「通过」其实没证明任何事——这些判断没法外包给模型，只能靠人把边界先划清楚。</p>
