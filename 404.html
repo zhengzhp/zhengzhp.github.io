@@ -19,7 +19,7 @@ p{color:#fff;margin-top:40px;font-size:24px;}
     document.getElementById("num").innerHTML=num;
     if(num<0){
       document.getElementById("num").innerHTML=0;
-      location.href="../blog/";
+      location.href="/";
       }
     }
   setInterval("redirect()", 1000);
@@ -27,12 +27,10 @@ p{color:#fff;margin-top:40px;font-size:24px;}
 </head>
 
 <body onload="redirect();">
-<div class="whole">
-  <img src="http://7xowaa.com1.z0.glb.clouddn.com/back.jpg">
-    <div class="mask"></div>
-</div>
+<!-- 原七牛云图床（7xowaa.com1.z0.glb.clouddn.com）已失效，改用纯 CSS 渐变背景 + 文字，避免外链依赖 -->
+<div class="whole" style="background:linear-gradient(135deg,#2b5876 0%,#4e4376 100%);"></div>
 <div class="b">
-    <img src="http://7xowaa.com1.z0.glb.clouddn.com/404.png" class="center">
+    <div style="font-size:120px;font-weight:bold;color:#fff;line-height:1.2;">404</div>
     <p>
       暂时未能找到您查找的页面<br>
       可能输入的网址错误或此页面不存在<br>
