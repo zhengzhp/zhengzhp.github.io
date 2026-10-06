@@ -1,0 +1,69 @@
+<h3>写在前面</h3>
+<p>DualMind 是我最近在做的一个 AI 浏览器助手（Chrome / Edge，Manifest V3），第一版只聚焦一件事：<b>翻译</b>。具体是网页划词翻译、Side Panel 工作台，以及整页沉浸式双语对照翻译。模型不经过我自己的服务器，而是走 BYOK——用户自己填 OpenAI 兼容端点（DeepSeek / Groq / 各类中转 / 自建 vLLM 都行），或者直接连本机的 Ollama。</p>
+<p>这篇文章记录的是「架构」这一层：技术选型是怎么定的、目录为什么这么切、以及两条我认为最值得坚持的设计边界。踩过的坑另开一篇写。</p>
+<a id="more"></a>
+
+<h3>一、技术选型：为什么是 WXT + React 19 + Tailwind</h3>
+<p>浏览器扩展的工程化过去几年一直有点「野生」。手写 Vite 当然能跑，但 MV3 有一堆绕不开的琐碎事：manifest 的多环境差异、content script 的注入与热更新、扩展页的独立入口、不同浏览器的产物差异。这些都不是业务逻辑，却极其吃时间。</p>
+<p>最后选了 <b>WXT</b>（基于 Vite），理由是它的抽象层级刚好合适：</p>
+<p>1. <b>文件式入口</b>：<code>entrypoints/</code> 下的文件路径本身就是入口声明，不需要手写一堆 build 配置；<br>
+2. <b>多浏览器</b>：同一份代码 <code>wxt build -b firefox</code> 就能出 Firefox 产物；<br>
+3. <b>开发体验</b>：content script 支持热更新，而且 <code>createShadowRootUi</code> 这种高频需求已经封装好了，少写不少样板代码。</p>
+<p>框架层面是 <b>React 19 + TypeScript + Tailwind</b>。这里有个容易被误解的点：React <b>只用在扩展自己的页面</b>（Side Panel、全页工作台、设置页），<b>绝不注入宿主网页</b>。宿主页面上只有划词浮层和沉浸式译文的 DOM 追加，用的是原生 DOM API。原因在后面「两条硬边界」里会展开。</p>
+
+<h3>二、目录结构：按「运行上下文」和「能力」双重切分</h3>
+<p>目录切分的原则是：<b>入口只做装配，能力各自成包，跨能力的东西下沉到 shared</b>。</p>
+<figure class="highlight plain"><pre><span class="line">entrypoints/          # 各运行上下文的「装配点」，只做挂载与路由</span><br><span class="line">  background.ts       # MV3 Service Worker：消息路由 + 调模型 + 右键菜单 + 快捷键</span><br><span class="line">  content.ts          # 内容脚本：读设置 → 站点禁用判断 → 挂载划词浮层 / 沉浸译入口</span><br><span class="line">  sidepanel/          # 侧边栏工作台</span><br><span class="line">  workspace/          # 加宽的全页工作台（与侧栏共用同一个翻译会话）</span><br><span class="line">  options/            # 设置页</span><br><span class="line">features/             # 按「能力」分包，一个能力一个目录</span><br><span class="line">  translate/          # 划词 + 工作台翻译</span><br><span class="line">  immersive/          # 沉浸式全文双语翻译</span><br><span class="line">  selection-toolbar/  # 划词浮层</span><br><span class="line">providers/            # 模型供应商适配层（永不碰 DOM）</span><br><span class="line">  openai-compatible.ts / ollama.ts / sse.ts / registry.ts</span><br><span class="line">shared/               # 跨能力复用：messaging / storage / errors / llm / ui</span><br></pre></figure>
+<p>入口文件也刻意写得很薄，只负责「读设置 → 判断 → 挂载」：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="keyword">export</span> <span class="keyword">default</span> defineContentScript({</span><br><span class="line">  matches: [<span class="string">'&lt;all_urls&gt;'</span>],</span><br><span class="line">  runAt: <span class="string">'document_idle'</span>,</span><br><span class="line">  cssInjectionMode: <span class="string">'ui'</span>,</span><br><span class="line"></span><br><span class="line">  <span class="keyword">async</span> main(ctx) {</span><br><span class="line">    <span class="comment">// 启动即拉一次设置，失败就直接放弃注入，避免在坏环境下打扰宿主页面</span></span><br><span class="line">    <span class="keyword">let</span> settings;</span><br><span class="line">    <span class="keyword">try</span> {</span><br><span class="line">      settings = <span class="keyword">await</span> sendMessage(<span class="string">'settings:get'</span>, <span class="literal">undefined</span>);</span><br><span class="line">    } <span class="keyword">catch</span> {</span><br><span class="line">      <span class="keyword">return</span>;</span><br><span class="line">    }</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 站点黑名单：用户明确禁用的域名不做任何注入</span></span><br><span class="line">    <span class="keyword">if</span> (settings.disabledHosts.includes(window.location.hostname)) <span class="keyword">return</span>;</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 两个能力并列挂载，互不干扰</span></span><br><span class="line">    <span class="keyword">await</span> mountSelectionToolbar(ctx, settings);</span><br><span class="line">    <span class="keyword">await</span> mountImmersive(ctx, settings);</span><br><span class="line">  },</span><br><span class="line">});</span><br></pre></figure>
+<p>这样切的好处很直接：想加 Chat 或 Agent，就是新开一个 <code>features/&lt;name&gt;/</code>，而不是往翻译服务里塞逻辑——后者迟早会变成一个无人敢动的 God Object。</p>
+
+<h3>三、两条硬边界</h3>
+<p>整个项目其实就靠两条规则撑着，后面所有的设计几乎都是它们的推论。</p>
+
+<h4>边界一：只有 Background 调模型，密钥不出内容脚本</h4>
+<p>Content Script 运行在别人的网页里，宿主页面理论上能通过 DOM 事件、原型链等方式去窥探同环境里的东西。所以 API Key 从设计上就<b>不允许</b>出现在 Content Script 中：Key 只存在 <code>chrome.storage.local</code> 的 <code>settings</code> 里，只有 Background 读得到，Provider 实例也只在 Background 创建。</p>
+<p>数据流因此被固定成单向的一条线：</p>
+<figure class="highlight plain"><pre><span class="line">Content / Side Panel / Options</span><br><span class="line">        │  messaging（类型化）</span><br><span class="line">        ▼</span><br><span class="line">Background Service Worker</span><br><span class="line">        │  shared/llm → providers/</span><br><span class="line">        ▼</span><br><span class="line">外部端点（OpenAI 兼容 / Ollama）</span><br></pre></figure>
+<p>流式结果再经 Port 回传 UI。好处是「安全」和「可排查」同时拿到了：任何时候你在网络面板看到的请求都只来自 Service Worker。</p>
+
+<h4>边界二：Provider 层永不碰 DOM</h4>
+<p><code>providers/</code> 里只有「请求 → 文本流」这一件事，不 import 任何 DOM 相关的东西。这条边界带来两个实际收益：</p>
+<p>1. Provider 可以在 Node 环境里被单测直接覆盖（不需要 jsdom），SSE 分包、错误码映射这类逻辑测起来非常轻；<br>
+2. 换模型服务时，改动范围被锁死在 <code>providers/</code> 内，不会污染到页面上「怎么渲染译文」的逻辑。</p>
+
+<h3>四、消息协议：自研的类型化 messaging</h3>
+<p>扩展开发里最容易失控的地方之一，就是「消息满天飞」。今天 <code>{type:'translate'}</code>，明天 <code>{action:'doTranslate'}</code>，最后没人说得清总共有多少种消息。所以我用一张 <code>ProtocolMap</code> 把消息名和它的入参/返回值类型绑死：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="comment">// shared/messaging/protocol.ts</span></span><br><span class="line"><span class="keyword">export</span> <span class="keyword">interface</span> ProtocolMap {</span><br><span class="line">  <span class="string">'settings:get'</span>:  { data: <span class="literal">undefined</span>;                return: AppSettings };</span><br><span class="line">  <span class="string">'settings:save'</span>: { data: Partial&lt;AppSettings&gt;;       return: AppSettings };</span><br><span class="line">  <span class="string">'translate:run'</span>: { data: TranslateRequest;          return: TranslateResult };</span><br><span class="line">  <span class="comment">// ...</span></span><br><span class="line">}</span><br><span class="line"><span class="keyword">export</span> <span class="keyword">type</span> MessageType = keyof ProtocolMap;</span><br></pre></figure>
+<p>客户端封装统一把响应拆成 <code>{ok:true,data}</code> / <code>{ok:false,error,code}</code>，调用方不用每次自己判空：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="comment">// shared/messaging/client.ts —— 调用处直接拿到业务类型，错误统一抛出</span></span><br><span class="line"><span class="keyword">const</span> settings = <span class="keyword">await</span> sendMessage(<span class="string">'settings:get'</span>, <span class="literal">undefined</span>);</span><br></pre></figure>
+<p>更关键的是<b>长连接 Port</b>。流式翻译和沉浸式批量翻译都走 Port，而不是反复 <code>sendMessage</code>，原因有三个：</p>
+<p>1. <b>一次建连多次回传</b>：chunk 直接推给 UI，不用为每个 token 起一次消息往返；<br>
+2. <b>天然支持 abort</b>：断开 Port 就是取消，配合 <code>AbortSignal</code> 能干净地停掉底层 fetch；<br>
+3. <b>可以并发多批</b>：沉浸式翻译给每个批次分配独立 <code>requestId</code>，在同一条 Port 上用 <code>Map&lt;requestId, pending&gt;</code> 管多路请求，各自独立取消。</p>
+<p>项目里一共三条 Port：<code>dualmind-translate</code>（单段流式）、<code>dualmind-immersive</code>（整页批量、可并发）、<code>dualmind-sidepanel</code>（侧栏生命周期）。</p>
+
+<h3>五、Provider 抽象：一份 SSE 解析器伺候所有模型服务</h3>
+<p>Provider 的接口刻意做得很小，只要实现流式，非流式可以默认由流式累积得到：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="keyword">export</span> <span class="keyword">interface</span> ChatProvider {</span><br><span class="line">  id: <span class="keyword">string</span>;</span><br><span class="line">  capabilities: ProviderCapabilities;</span><br><span class="line">  listModels(): Promise&lt;<span class="keyword">string</span>[]&gt;;</span><br><span class="line">  chat(input: ChatInput): Promise&lt;ChatResult&gt;;</span><br><span class="line">  <span class="comment">/** 流式输出；不支持时应退化为单次 yield 全文 */</span></span><br><span class="line">  chatStream(input: ChatInput): AsyncIterable&lt;<span class="keyword">string</span>&gt;;</span><br><span class="line">  testConnection(): Promise&lt;{ ok: <span class="keyword">true</span>; detail: <span class="keyword">string</span> } | { ok: <span class="keyword">false</span>; error: <span class="keyword">string</span>; code?: ErrorCode }&gt;;</span><br><span class="line">}</span><br></pre></figure>
+<p>于是「OpenAI 兼容」和「本地 Ollama」的差异被压缩到只剩一些配置项：base URL、鉴权头、模型列表端点。Ollama 的对话端点 <code>/v1/chat/completions</code> 本身也是 OpenAI 协议，所以<b>两者复用同一个 SSE 解析器</b>，调用链只差一个 base URL。</p>
+<p>SSE 解析是手写的，没用 <code>EventSource</code>——因为它在扩展的 Service Worker 里不可用。用 <code>fetch</code> + <code>ReadableStream</code> + <code>TextDecoder</code> 增量解码，并且必须自己维护「半行缓冲」，否则 TCP 分包会把一行 JSON 劈成两半：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="comment">// providers/sse.ts —— 增量按行切分，半行留在 buffer 里等下一块</span></span><br><span class="line"><span class="keyword">const</span> reader = res.body.getReader();</span><br><span class="line"><span class="keyword">const</span> decoder = <span class="keyword">new</span> TextDecoder(<span class="string">'utf-8'</span>);</span><br><span class="line"><span class="keyword">let</span> buffer = <span class="string">''</span>;</span><br><span class="line"></span><br><span class="line"><span class="keyword">while</span> (<span class="keyword">true</span>) {</span><br><span class="line">  <span class="keyword">const</span> { done, value } = <span class="keyword">await</span> reader.read();</span><br><span class="line">  <span class="keyword">if</span> (done) <span class="keyword">break</span>;</span><br><span class="line">  buffer += decoder.decode(value, { stream: <span class="keyword">true</span> });</span><br><span class="line"></span><br><span class="line">  <span class="keyword">let</span> idx;</span><br><span class="line">  <span class="keyword">while</span> ((idx = buffer.indexOf(<span class="string">'\n'</span>)) &gt;= <span class="number">0</span>) {</span><br><span class="line">    <span class="keyword">const</span> line = buffer.slice(<span class="number">0</span>, idx).trim();</span><br><span class="line">    buffer = buffer.slice(idx + <span class="number">1</span>);</span><br><span class="line">    <span class="keyword">if</span> (!line || line.startsWith(<span class="string">':'</span>)) <span class="keyword">continue</span>;      <span class="comment">// 注释行 / 空行</span></span><br><span class="line">    <span class="keyword">if</span> (line === <span class="string">'data: [DONE]'</span>) <span class="keyword">return</span>;            <span class="comment">// 结束标记</span></span><br><span class="line">    <span class="comment">// 解析失败的行静默跳过，容忍服务端偶发的残缺 JSON</span></span><br><span class="line">    <span class="keyword">try</span> { <span class="keyword">yield</span> JSON.parse(line.slice(<span class="number">5</span>)).choices[<span class="number">0</span>].delta.content ?? <span class="string">''</span>; } <span class="keyword">catch</span> {}</span><br><span class="line">  }</span><br><span class="line">}</span><br></pre></figure>
+<p>错误也统一收口：HTTP 状态映射成固定的 <code>ErrorCode</code>（401/403 → <code>UNAUTHORIZED</code>、404 → <code>MODEL_NOT_FOUND</code>、429 → <code>RATE_LIMIT</code>、408/504 → <code>TIMEOUT</code>），再由 <code>shared/errors.ts</code> 翻译成给用户看的中文文案。UI 层因此完全不需要关心「是哪个服务商报的错」。</p>
+
+<h3>六、MV3 权限取舍：<code>&lt;all_urls&gt;</code> 为什么删不掉</h3>
+<p>上架时最容易被质疑的就是权限。这个项目最终只保留了三个 API 权限——<code>storage</code>、<code>sidePanel</code>、<code>contextMenus</code>，但 <code>&lt;all_urls&gt;</code> 必须保留，而且它需要<b>同时</b>出现在两个地方，缺一不可：</p>
+<table>
+<thead><tr><th>位置</th><th>作用</th><th>去掉会怎样</th></tr></thead>
+<tbody>
+<tr><td><code>content_scripts.matches</code></td><td>划词浮层常驻注入，支撑「选中即自动显示」</td><td>只能改 <code>activeTab</code> 按需注入，每页首次使用都要用户手势唤起，功能退化</td></tr>
+<tr><td><code>host_permissions</code></td><td>BYOK 要请求用户自填的任意 Base URL，Service Worker 跨域 <code>fetch</code> 必需</td><td>直接 <code>Failed to fetch</code></td></tr>
+</tbody>
+</table>
+<p>那 <code>optional_host_permissions</code> 呢？看起来更「礼貌」，但收益其实为零：因为 <code>content_scripts.matches</code> 仍然是 <code>&lt;all_urls&gt;</code>，安装时的警告文案不会变，只是白白多了一个「运行时会失败」的入口。所以没用。</p>
+<p>另外两个权限是主动砍掉的：<code>activeTab</code> 和 <code>scripting</code>。<code>tabs.sendMessage</code> 只要目标页已经有 content script 就能用，不需要 host 权限或 activeTab；项目也确实没调用 <code>scripting.executeScript</code>。保留一个用不到的权限，除了让审核问更多问题之外没有任何价值。</p>
+<p>代价也要说清楚：安装时会出现「读取并更改您在所有网站上的数据」。这基本是划词类扩展的品类固有成本——你要在任意页面上响应选中，就必然要在任意页面上注入。能做的只是把「为什么要」写清楚，而不是假装不需要。</p>
+
+<h3>七、小结</h3>
+<p>回头看，这个项目里最有价值的其实不是某个具体实现，而是那两条边界：<b>密钥不出内容脚本</b>、<b>Provider 不碰 DOM</b>。它们不是性能优化，也不会让某个功能变得更快，但它们决定了这个代码库在加了 Chat、Agent 之后还能不能保持可读。</p>
+<p>架构的价值往往不在「能做什么」，而在「不允许做什么」。</p>

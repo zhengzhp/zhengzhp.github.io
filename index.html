@@ -185,6 +185,135 @@
           <div id="js-content" class="content-ll">
             
   
+    <article id="post-dualmind-architecture" class="article article-type-post  article-index" itemscope itemprop="blogPost">
+  <div class="article-inner">
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2026/10/06/dualmind-architecture/">DualMind 架构设计与技术选型：给 MV3 浏览器扩展划清边界</a>
+    </h1>
+  
+
+        
+        <a href="/2026/10/06/dualmind-architecture/" class="archive-article-date">
+  	<time datetime="2026-10-06T06:40:00.000Z" itemprop="datePublished"><i class="icon-calendar icon"></i>2026-10-06</time>
+</a>
+        
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+        <h3>写在前面</h3>
+<p>DualMind 是我最近在做的一个 AI 浏览器助手（Chrome / Edge，Manifest V3），第一版只聚焦一件事：<b>翻译</b>。具体是网页划词翻译、Side Panel 工作台，以及整页沉浸式双语对照翻译。模型不经过我自己的服务器，而是走 BYOK——用户自己填 OpenAI 兼容端点（DeepSeek / Groq / 各类中转 / 自建 vLLM 都行），或者直接连本机的 Ollama。</p>
+<p>这篇文章记录的是「架构」这一层：技术选型是怎么定的、目录为什么这么切、以及两条我认为最值得坚持的设计边界。踩过的坑另开一篇写。</p>
+        
+          <a class="article-more-a" href="/2026/10/06/dualmind-architecture/#more">more &gt;&gt;</a>
+        
+      
+
+      
+    </div>
+    <div class="article-info article-info-index">
+      
+      
+	<div class="article-tag tagcloud">
+		<i class="icon-price-tags icon"></i>
+		<ul class="article-tag-list">
+			 
+        		<li class="article-tag-list-item">
+        			<a href="javascript:void(0)" class="js-tag article-tag-list-link color3">js</a>
+        		</li>
+      		 
+        		<li class="article-tag-list-item">
+        			<a href="javascript:void(0)" class="js-tag article-tag-list-link color1">react</a>
+        		</li>
+      		
+		</ul>
+	</div>
+
+      
+
+      
+        <p class="article-more-link">
+          <a class="article-more-a" href="/2026/10/06/dualmind-architecture/">展开全文 &gt;&gt;</a>
+        </p>
+      
+
+      
+      <div class="clearfix"></div>
+    </div>
+  </div>
+</article>
+
+
+
+
+
+  
+    <article id="post-dualmind-pitfalls" class="article article-type-post  article-index" itemscope itemprop="blogPost">
+  <div class="article-inner">
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2026/10/06/dualmind-pitfalls/">DualMind 踩坑实录：沉浸式翻译、手势窗口与那些「看起来像玄学」的 bug</a>
+    </h1>
+  
+
+        
+        <a href="/2026/10/06/dualmind-pitfalls/" class="archive-article-date">
+  	<time datetime="2026-10-06T06:20:00.000Z" itemprop="datePublished"><i class="icon-calendar icon"></i>2026-10-06</time>
+</a>
+        
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+        <h3>写在前面</h3>
+<p>上一篇写了 DualMind 的架构和选型，这篇只记踩过的坑。之所以单独成文，是因为下面这些问题里，有几个的「症状」和「根因」隔得特别远——远到如果不写下来，下次一定还会再踩一遍。</p>
+        
+          <a class="article-more-a" href="/2026/10/06/dualmind-pitfalls/#more">more &gt;&gt;</a>
+        
+      
+
+      
+    </div>
+    <div class="article-info article-info-index">
+      
+      
+	<div class="article-tag tagcloud">
+		<i class="icon-price-tags icon"></i>
+		<ul class="article-tag-list">
+			 
+        		<li class="article-tag-list-item">
+        			<a href="javascript:void(0)" class="js-tag article-tag-list-link color3">js</a>
+        		</li>
+      		
+		</ul>
+	</div>
+
+      
+
+      
+        <p class="article-more-link">
+          <a class="article-more-a" href="/2026/10/06/dualmind-pitfalls/">展开全文 &gt;&gt;</a>
+        </p>
+      
+
+      
+      <div class="clearfix"></div>
+    </div>
+  </div>
+</article>
+
+
+
+
+
+  
     <article id="post-call-apply" class="article article-type-post  article-index" itemscope itemprop="blogPost">
   <div class="article-inner">
     
@@ -370,147 +499,6 @@
       
         <p class="article-more-link">
           <a class="article-more-a" href="/2018/09/23/some-problems/">展开全文 >></a>
-        </p>
-      
-
-      
-      <div class="clearfix"></div>
-    </div>
-  </div>
-</article>
-
-
-
-
-
-  
-    <article id="post-interview-questions-2" class="article article-type-post  article-index" itemscope itemprop="blogPost">
-  <div class="article-inner">
-    
-      <header class="article-header">
-        
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/04/22/interview-questions-2/">前端面试题js,react篇</a>
-    </h1>
-  
-
-        
-        <a href="/2018/04/22/interview-questions-2/" class="archive-article-date">
-  	<time datetime="2018-04-21T20:32:55.000Z" itemprop="datePublished"><i class="icon-calendar icon"></i>2018-04-22</time>
-</a>
-        
-      </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-        <h3 id="一些感觉有必要记下来的面试题"><a href="#一些感觉有必要记下来的面试题" class="headerlink" title="一些感觉有必要记下来的面试题"></a>一些感觉有必要记下来的面试题</h3><blockquote>
-<p><b>1.如何实现 a==1&amp;&amp;a==2&amp;&amp;a==3</b></p>
-</blockquote>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">var</span> aﾠ = <span class="number">1</span>;</span><br><span class="line"><span class="keyword">var</span> a = <span class="number">2</span>;</span><br><span class="line"><span class="keyword">var</span> ﾠa = <span class="number">3</span>;</span><br><span class="line"><span class="keyword">if</span>(aﾠ==<span class="number">1</span> &amp;&amp; a== <span class="number">2</span> &amp;&amp;ﾠa==<span class="number">3</span>) &#123;</span><br><span class="line">    <span class="built_in">console</span>.log(<span class="string">"Why hello there!"</span>)</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-        
-          <a class="article-more-a" href="/2018/04/22/interview-questions-2/#more">more >></a>
-        
-      
-
-      
-    </div>
-    <div class="article-info article-info-index">
-      
-      
-	<div class="article-tag tagcloud">
-		<i class="icon-price-tags icon"></i>
-		<ul class="article-tag-list">
-			 
-        		<li class="article-tag-list-item">
-        			<a href="javascript:void(0)" class="js-tag article-tag-list-link color3">js</a>
-        		</li>
-      		 
-        		<li class="article-tag-list-item">
-        			<a href="javascript:void(0)" class="js-tag article-tag-list-link color3">面试</a>
-        		</li>
-      		 
-        		<li class="article-tag-list-item">
-        			<a href="javascript:void(0)" class="js-tag article-tag-list-link color1">react</a>
-        		</li>
-      		
-		</ul>
-	</div>
-
-      
-
-      
-        <p class="article-more-link">
-          <a class="article-more-a" href="/2018/04/22/interview-questions-2/">展开全文 >></a>
-        </p>
-      
-
-      
-      <div class="clearfix"></div>
-    </div>
-  </div>
-</article>
-
-
-
-
-
-  
-    <article id="post-interview-questions-1" class="article article-type-post  article-index" itemscope itemprop="blogPost">
-  <div class="article-inner">
-    
-      <header class="article-header">
-        
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/04/20/interview-questions-1/">前端面试题css,html篇</a>
-    </h1>
-  
-
-        
-        <a href="/2018/04/20/interview-questions-1/" class="archive-article-date">
-  	<time datetime="2018-04-20T11:15:43.000Z" itemprop="datePublished"><i class="icon-calendar icon"></i>2018-04-20</time>
-</a>
-        
-      </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-        <h3 id="整理的一些面试题"><a href="#整理的一些面试题" class="headerlink" title="整理的一些面试题"></a>整理的一些面试题</h3><p>&emsp;&emsp;最近面试发现很多基础都忘了不少，在此整理一下，其中有面试遇到的，也有一些是最近刷到的面试题</p>
-<blockquote>
-<p><b>1. <strong>HTML哪些是块级元素，哪些是行内元素</strong></b></p>
-</blockquote>
-<p>&emsp;&emsp;在这里只写列出部分比较常用的标签<br>&emsp;&emsp;1. 块级元素div、p、h1-h6、ul、ol、li、br、header、footer、table、form<br>&emsp;&emsp;2. 行内元素span、a、b、i、button<br>&emsp;&emsp;3. 行内替换元素,video、textarea、input、img、select
-        
-          <a class="article-more-a" href="/2018/04/20/interview-questions-1/#more">more >></a>
-        
-      
-
-      
-    </div>
-    <div class="article-info article-info-index">
-      
-      
-	<div class="article-tag tagcloud">
-		<i class="icon-price-tags icon"></i>
-		<ul class="article-tag-list">
-			 
-        		<li class="article-tag-list-item">
-        			<a href="javascript:void(0)" class="js-tag article-tag-list-link color3">面试</a>
-        		</li>
-      		 
-        		<li class="article-tag-list-item">
-        			<a href="javascript:void(0)" class="js-tag article-tag-list-link color4">css</a>
-        		</li>
-      		
-		</ul>
-	</div>
-
-      
-
-      
-        <p class="article-more-link">
-          <a class="article-more-a" href="/2018/04/20/interview-questions-1/">展开全文 >></a>
         </p>
       
 

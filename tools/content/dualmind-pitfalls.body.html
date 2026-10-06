@@ -1,0 +1,85 @@
+<h3>写在前面</h3>
+<p>上一篇写了 DualMind 的架构和选型，这篇只记踩过的坑。之所以单独成文，是因为下面这些问题里，有几个的「症状」和「根因」隔得特别远——远到如果不写下来，下次一定还会再踩一遍。</p>
+<a id="more"></a>
+
+<h3>坑 1：一个 WeakSet 造成的「整页翻译假死」</h3>
+<p><b>症状</b>：点「沉浸译」翻译整页，偶尔会提示「没有正文」。刷新、换语言、重启扩展都没用，但换个页面又好了。</p>
+<p><b>根因</b>：分段器用 <code>WeakSet&lt;Element&gt; seen</code> 来避免同一元素被重复采集，这是对的。但我一开始把 <code>seen.add(el)</code> 写在了「判断这个元素能不能翻」之前：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="comment">// ❌ 错误写法：在执行任何产出之前就标记</span></span><br><span class="line">seen.add(el);</span><br><span class="line"><span class="keyword">if</span> (!isTranslatableText(text)) <span class="keyword">return</span>;</span><br><span class="line">out.push({ id, text, el });</span><br></pre></figure>
+<p>问题在于：<b>WeakSet 不会自己清理</b>。这些元素仍在文档里，没有被回收，于是「已经见过」这个标记是永久的。一次没产出片段的全页扫描，会把遍历过的所有叶子元素全部写进 <code>seen</code>；下一次采集时它们全被跳过，恒返回 0 段——表现就是「一直说没有正文」，而且改语言重试也不会恢复。</p>
+<p>修法是把标记挪到<b>真正产出片段之后</b>：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="comment">// ✅ 正确写法：只有「真正产出片段」的元素才记入 seen</span></span><br><span class="line"><span class="comment">// 若在判定可译前就标记，一次空结果会把遍历过的叶子元素永久写进这个弱引用集合，</span></span><br><span class="line"><span class="comment">// 导致之后每次采集都直接跳过它们、恒返回 0 段，表现为「一直提示没有正文」的假死。</span></span><br><span class="line">seen?.add(el);</span><br><span class="line">out.push({ id: <span class="string">`${idPrefix}-${autoSeq}`</span>, text, el });</span><br></pre></figure>
+<p>这类 bug 最阴的地方是：它<b>依赖于第一次扫描是否产出了片段</b>，所以「有时候好有时候坏」。修复后我加了一条单测专门盯着它——<b>「未产出片段的元素不得写入 seen」</b>。</p>
+
+<h3>坑 2：一句「没有正文」掩盖了三重根因</h3>
+<p>上面那个 bug 之所以难查，还有一个帮凶：<b>文案太笼统</b>。当时的 0 段提示只有一句「没有正文」，但它其实对应两种完全不同的情况：</p>
+<p>1. 页面真的没采到正文（分段器问题）；<br>
+2. 采到了，但内容<b>已经是目标语言</b>，被过滤掉了（正常行为）。</p>
+<p>顺着错误的方向查了很久。修法是让采集函数同时回传两个量，让调用方有信息可判：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="comment">// controller.ts —— 同时给出「原始采集量」与「过滤后待译量」</span></span><br><span class="line"><span class="keyword">private</span> collectForTranslation(): { collected: CollectedSegment[]; fresh: CollectedSegment[] } {</span><br><span class="line">  <span class="keyword">const</span> collected = collectSegments(document.body, { seen: <span class="keyword">this</span>.seen });</span><br><span class="line">  <span class="keyword">const</span> fresh = collected.filter(</span><br><span class="line">    (segment) =&gt; !isTargetLanguage(segment.text, <span class="keyword">this</span>.targetLanguage),</span><br><span class="line">  );</span><br><span class="line">  <span class="keyword">return</span> { collected, fresh };</span><br><span class="line">}</span><br></pre></figure>
+<p>有了这个区分，0 段时就能给出准确文案；而且在「采到片段但全被语言过滤」这种情况下，还要<b>回退 <code>seen</code></b>，否则用户改完目标语言再点一次，内容依然被当成「已见过」而消失。</p>
+<p>同一轮排查还挖出两个相关的坑：</p>
+<p>3. <b>语言选择器被会话态覆盖</b>：工作台的语言下拉显示的是「上次实际使用的语言」（存在会话里），而不是持久化设置。于是会出现「下拉里显示中文、设置里其实存的是 en」的假象；用户再选一次「中文」不触发 <code>onChange</code>，设置就永远改不回去。修法是选择器只反映持久化设置。<br>
+4. <b>设置被整对象覆盖</b>：设置页保存时提交的是完整的 settings 对象，而它是页面加载时的旧快照，会把其他入口刚写入的值覆盖回去。修法是新增 <code>diffSettings()</code>，<b>只提交相对基线的增量字段</b>，由 Background 做浅合并。</p>
+<p>一个笼统的错误文案，代价是四个 bug 一起藏了很久。</p>
+
+<h3>坑 3：<code>sidePanel.open()</code> 的瞬时手势窗口</h3>
+<p><b>症状</b>：点右键菜单「翻译整页」时，偶尔报 <code>sidePanel.open() may only be called in response to a user gesture</code>；更糟的是这个异常被外层 catch 捕获，用错误信息覆盖掉了<b>刚刚写好的翻译结果</b>。</p>
+<p><b>根因</b>：<code>sidePanel.open()</code> 必须在「瞬时用户激活（transient activation）」窗口内调用。网页里的点击激活能一路传到 Service Worker，但<b>经不起 <code>open()</code> 之前多一次异步往返</b>——等它返回时，激活已经过期了。</p>
+<p>旧实现先 <code>await isSidePanelOpen()</code>（内部含一次 <code>getContexts()</code> 往返）再 <code>open()</code>，于是偶发失败。修法是改用<b>同步</b>的 Port 连接状态来判断面板是否已开，确保 <code>open()</code> 紧跟手势：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="keyword">async</span> <span class="keyword">function</span> <span class="title">toggleSidePanel</span>(windowId: number): Promise&lt;<span class="keyword">boolean</span>&gt; {</span><br><span class="line">  <span class="comment">// 关键：open() 依赖瞬时用户激活，经不起 open() 前多一次异步往返。</span></span><br><span class="line">  <span class="comment">// 因此改用「同步」的 Port 连接态判断，确保 open() 紧跟手势调用。</span></span><br><span class="line">  <span class="keyword">if</span> (isSidePanelConnected()) {</span><br><span class="line">    <span class="keyword">await</span> closeSidePanel(windowId);</span><br><span class="line">    <span class="keyword">return</span> <span class="keyword">false</span>;</span><br><span class="line">  }</span><br><span class="line">  <span class="comment">// 若面板其实已开但 Port 尚未连上（刚打开的竞态），open() 是幂等 no-op，</span></span><br><span class="line">  <span class="comment">// 返回 true 也与真实状态一致（面板确实开着）。</span></span><br><span class="line">  <span class="keyword">await</span> sidePanelApi?.open({ windowId });</span><br><span class="line">  <span class="keyword">return</span> <span class="keyword">true</span>;</span><br><span class="line">}</span><br></pre></figure>
+<p>同样的约束在右键菜单里还得再处理一次，而且顺序不能反：<b>先同步开面板，再执行耗时翻译</b>。否则等网络请求回来，手势早没了。</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="comment">// 关键：sidePanel.open() 必须在用户手势有效期内调用。</span></span><br><span class="line"><span class="comment">// 若放到 await translateText()（网络耗时）之后再打开，手势已失效，会抛异常，</span></span><br><span class="line"><span class="comment">// 且该异常会被下面的 catch 捕获，用错误覆盖掉刚写好的译文。</span></span><br><span class="line"><span class="comment">// 因此先同步开面板，再执行翻译。</span></span><br><span class="line"><span class="keyword">if</span> (sidePanelApi &amp;&amp; tab?.windowId != <span class="literal">null</span>) {</span><br><span class="line">  <span class="keyword">void</span> sidePanelApi.open({ windowId: tab.windowId }).catch(() =&gt; {});</span><br><span class="line">}</span><br></pre></figure>
+<p>结论：MV3 里凡是「需要用户手势」的 API，都要假设自己只有<b>一个 tick</b> 的时间。</p>
+
+<h3>坑 4：模型把原文抄了回来，还报「翻译完成」</h3>
+<p><b>症状</b>：用 <code>qwen2.5-coder:7b</code> 做整页翻译，界面显示「翻译完成」，但译文和原文一模一样。</p>
+<p><b>根因</b>：代码模型在多语混排的<b>批量</b>输入下，会倾向于「原样抄写」输入内容，而不是翻译。而旧代码没有任何校验，把它当作正常结果渲染了，于是用户看到的是一个「成功的失败」。</p>
+<p>修法分三层。第一层是<b>检测回显</b>——归一化空白后比较译文与原文：</p>
+<figure class="highlight typescript"><pre><span class="line"><span class="comment">/**</span></span><br><span class="line"><span class="comment"> * 译文是否只是把原文（近乎）原样抄回。</span></span><br><span class="line"><span class="comment"> * 空译文不算回显（交由「缺失」分支处理）。</span></span><br><span class="line"><span class="comment"> */</span></span><br><span class="line"><span class="keyword">export</span> <span class="keyword">function</span> <span class="title">looksLikeEcho</span>(translation: <span class="keyword">string</span>, source: <span class="keyword">string</span>): <span class="keyword">boolean</span> {</span><br><span class="line">  <span class="keyword">const</span> translated = normalizeForCompare(translation);</span><br><span class="line">  <span class="keyword">if</span> (!translated) <span class="keyword">return</span> <span class="keyword">false</span>;</span><br><span class="line">  <span class="keyword">return</span> translated === normalizeForCompare(source);</span><br><span class="line">}</span><br></pre></figure>
+<p>第二层是<b>降级补译</b>：批量里凡是「缺失」或「回显」的片段，退回逐段翻译，单段失败不影响其余：</p>
+<figure class="highlight typescript"><pre><span class="line">segments.forEach((segment, index) =&gt; {</span><br><span class="line">  <span class="keyword">const</span> text = (parsed[index] ?? <span class="string">''</span>).trim();</span><br><span class="line">  <span class="comment">// 缺段或与原文完全一致（回显）都视为未翻译，交给逐段补译</span></span><br><span class="line">  <span class="keyword">if</span> (!text || looksLikeEcho(text, segment.text)) fallback.push(segment);</span><br><span class="line">  <span class="keyword">else</span> results.push({ id: segment.id, text });</span><br><span class="line">});</span><br></pre></figure>
+<p>第三层是<b>不许伪装成功</b>：逐段补译后仍然回显或失败的片段，标记 <code>untranslated: true</code>，在页面上用琥珀色虚线块加「未翻译」角标显式展示，而不是拿原文充数。</p>
+<p>顺带一提，批量翻译的 Prompt 我用的是 <code>[[n]]</code> 编号标记，而不是 JSON——小模型对结构化分隔符的遵循度明显更高。解析器也留了退化路径：完全没有标记时按空行切分。</p>
+
+<h3>坑 5：流式输出时，「停止」按钮偶发失灵</h3>
+<p><b>症状</b>：翻译正在流式输出时点「停止」或「关闭」，有时候没反应。</p>
+<p><b>根因</b>：浏览器只有在 <code>mousedown</code> 和 <code>mouseup</code> 落在<b>同一个节点</b>上时才会派发 <code>click</code>。而浮层当时是「每来一个 chunk 就重建按钮节点」，用户按下的那一刻节点正好被换掉，click 就丢了。</p>
+<p>修法有三条，缺一不可：</p>
+<p>1. <b>DOM 骨架只建一次，绝不重写 <code>innerHTML</code></b>，流式只更新文本节点；<br>
+2. 事件用<b>委托</b>只绑一次，不随节点重建而重绑；<br>
+3. 引入<b>会话代际 <code>sessionId</code></b>：关闭或发起新请求时递增，让在途 chunk 和旧回调自动失效。</p>
+<p><code>sessionId</code> 顺带还解决了另一个问题：复制按钮的「已复制」提示，用旧定时器回调污染新会话——现在连点也不会提前复位。</p>
+<p>还有两个小但很烦的细节：<b>按钮要设固定 <code>min-width</code></b>，否则「复制 → 已复制」「侧边栏 → 收起侧栏」这类文案切换会让整行重排；以及 <code>[hidden]</code> 的 UA 样式 <code>display:none</code> 优先级低于作者样式，必须在自己的样式里显式写一遍 <code>.dm-status[hidden]{display:none}</code>。</p>
+
+<h3>坑 6：错误提示会变成「钉子户」</h3>
+<p><b>症状</b>：一次翻译失败后，错误提示一直挂在界面上，甚至和「翻译中 3/12」同时出现，自相矛盾。</p>
+<p><b>根因</b>有两个，都在状态管理上：</p>
+<p>1. UI 把提示存在组件本地 state 里，只在「本视图内的操作」清空。当新一轮翻译由<b>其他入口</b>发起（悬浮按钮 / 右键菜单 / 划词浮层），本视图收不到清空动作，旧提示就永久挂着。<br>
+2. 沉浸式控制器里，一批失败后 <code>this.error = message</code> 之后再没有清除逻辑，后续批次成功了也依然挂着。</p>
+<p>修法是把「错误态」的权威来源收敛掉：<code>ImmersiveControl</code> 每次成功取到状态就 <code>setError('')</code>；工作台改为从会话读 <code>setError(sess.error ?? '')</code>，让翻译会话成为唯一事实来源。</p>
+<p>「部分失败」的提示则改成<b>按批次记账</b>：用一个 <code>failedIds: Set</code> 记录失败的片段 id，成功批次会把对应 id 移除，再由 <code>refreshFailure()</code> 统一刷新文案。这样全部补译成功后提示会自动消失，而不是把「部分失败」永远挂着，也不是把失败伪装成成功。</p>
+
+<h3>坑 7：测试自己的坑——E2E 种子被产品迁移悄悄改写</h3>
+<p><b>症状</b>：划词浮层的 E2E 用例集体挂掉，本地手动测却是好的。</p>
+<p><b>根因</b>：E2E 用 <code>worker.evaluate</code> 直接往 <code>chrome.storage.local</code> 写种子设置，为了模拟「选中后自动显示」，种子里写了 <code>toolbarTrigger: 'auto'</code>。但产品恰好有一个迁移：把旧的默认值 <code>auto</code> 收敛成 <code>shortcut</code>。更巧的是，种子没写 <code>local:migrations</code>，于是迁移认为「还没执行过」，<b>把种子改掉了</b>——用例自然永远等不到浮层。</p>
+<p>修法：种子一并写入迁移标记，并且取值从 <code>MIGRATION_IDS</code> 派生，这样以后新增迁移不需要手工同步。</p>
+<p>E2E 里还有几个和 MV3 强相关的点值得记一下：</p>
+<p>1. MV3 扩展只能用 <b>persistent context</b> 加载，配 <code>--load-extension</code>；<br>
+2. <b>无头模式下必须指定 <code>channel: 'chromium'</code></b>——Playwright 默认用的 headless shell 不支持 <code>--load-extension</code>，扩展根本不会加载；<br>
+3. 真实的 Side Panel 用例在无头下必失败（无头不产生 <code>SIDE_PANEL</code> 上下文），所以这些用例标了 <code>test.skip(!E2E_HEADED)</code>，只有 <code>E2E_HEADED=1</code> 时才跑；<br>
+4. 扩展没在 manifest 里配 <code>key</code> 时，ID 每次都不一样，只能从 <b>Service Worker 的 URL</b> 里动态解析。</p>
+<p>另外 Playwright 配置必须把 <code>workers</code> 设成 1：扩展的 storage 和 Service Worker 是<b>跨用例共享</b>的，并行跑会互相污染。</p>
+
+<h3>坑 8：开发期的两个「迷惑现象」</h3>
+<p><b>现象一：改了 content script，后台标签页没更新。</b><br>WXT 只对匹配到的标签页做热更新，而没被激活的后台标签仍跑着旧脚本。<b>表现极具迷惑性</b>：新功能「不生效」、浮层「关不掉」，但代码其实完全正确。排查前先确认「Reload 扩展 + 刷新页面」。</p>
+<p><b>现象二：快捷键改了不生效。</b><br>Chrome <b>只在首次安装时</b>采纳 <code>suggested_key</code>，Reload 和更新都不会重新绑定——这就是「快捷键有描述、按键却是空的」的常见原因。必须卸载重装，或在 <code>chrome://extensions/shortcuts</code> 手动设置。</p>
+<p>还有一个开发体验上的坑：WXT 默认在 content script 变更时 reload <b>所有</b>匹配的标签页，而这个项目的 <code>matches</code> 是 <code>&lt;all_urls&gt;</code>，体感像浏览器在无限刷页。最后在 Background 里 monkey-patch 了 <code>tabs.reload</code>，默认只刷当前活动标签。</p>
+
+<h3>小结：几条可复用的经验</h3>
+<p>1. <b>状态对象会「记住」你的错误</b>：<code>WeakSet</code> 记得每一个元素，「已经打开的标记」记得每一次迁移，错误提示记得每一次失败。凡是「一次写入、长期有效」的状态，都要问一句「什么情况下它应该被清掉」。<br>
+2. <b>笼统的错误文案会放大排查成本</b>：「没有正文」这一句话，藏了四个 bug。0 结果时一定要区分成因。<br>
+3. <b>不要假装成功</b>：模型回显、部分片段失败，都应该显式标成「未翻译」，而不是拿原文或成功态糊过去。<br>
+4. <b>MV3 的手势只有一瞬间</b>：所有需要用户激活的 API，前面不能有 await。<br>
+5. <b>别重建正在被点击的节点</b>：骨架只建一次 + 事件委托，是流式 UI 的基本功。<br>
+6. <b>测试数据要跟着产品规则走</b>：迁移、默认值这类「隐形逻辑」最容易让测试在被改动后悄悄失效。</p>
